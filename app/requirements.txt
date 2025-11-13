@@ -1,0 +1,7 @@
+sentence-transformers
+opensearch-py
+pandas
+python-dateutil
+fastapi
+uvicorn[standard]
+

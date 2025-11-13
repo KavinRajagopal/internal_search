@@ -1,0 +1,73 @@
+{
+  "settings": {
+    "index": {
+      "knn": true,
+      "number_of_shards": 1,
+      "number_of_replicas": 0
+    },
+    "analysis": {
+      "analyzer": {
+        "english_custom": {
+          "type": "standard",
+          "stopwords": "_english_"
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "id": {
+        "type": "keyword"
+      },
+      "title": {
+        "type": "text",
+        "analyzer": "english_custom"
+      },
+      "excerpt": {
+        "type": "text",
+        "analyzer": "english_custom"
+      },
+      "body_text": {
+        "type": "text",
+        "analyzer": "english_custom"
+      },
+      "url": {
+        "type": "keyword"
+      },
+      "image": {
+        "type": "keyword",
+        "index": false
+      },
+      "tags": {
+        "type": "keyword"
+      },
+      "author": {
+        "type": "keyword"
+      },
+      "site_id": {
+        "type": "keyword"
+      },
+      "status": {
+        "type": "keyword"
+      },
+      "published_at": {
+        "type": "date"
+      },
+      "updated_at": {
+        "type": "date"
+      },
+      "acl_groups": {
+        "type": "keyword"
+      },
+      "embedding": {
+        "type": "knn_vector",
+        "dimension": 384,
+        "method": {
+          "name": "hnsw",
+          "engine": "lucene",
+          "space_type": "cosinesimil"
+        }
+      }
+    }
+  }
+}
