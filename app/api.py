@@ -169,15 +169,14 @@ def build_bm25_query(query: str, top_k: int) -> Dict[str, Any]:
 
 
 def build_semantic_query(query_embedding: List[float], top_k: int) -> Dict[str, Any]:
-    """Build semantic (vector-only) search query using script_score."""
+    """Build semantic (vector-only) search query using native knn."""
     return {
         "size": top_k,
         "query": {
-            "script_score": {
-                "query": {"match_all": {}},
-                "script": {
-                    "source": "cosineSimilarity(params.query_vector, 'embedding') + 1.0",
-                    "params": {"query_vector": query_embedding}
+            "knn": {
+                "embedding": {
+                    "vector": query_embedding,
+                    "k": top_k
                 }
             }
         },
@@ -189,23 +188,35 @@ def build_semantic_query(query_embedding: List[float], top_k: int) -> Dict[str, 
 
 def build_hybrid_query(query: str, query_embedding: List[float], top_k: int, 
                        bm25_weight: float, vector_weight: float) -> Dict[str, Any]:
-    """Build hybrid search query combining BM25 and vector similarity."""
+    """Build hybrid search query combining BM25 and vector similarity.
+    
+    Note: OpenSearch doesn't natively support weighted hybrid search in a single query,
+    so we use a bool query with should clauses for both BM25 and knn.
+    """
     return {
         "size": top_k,
         "query": {
-            "script_score": {
-                "query": {
-                    "multi_match": {
-                        "query": query,
-                        "fields": ["title^3", "excerpt^2", "body_text"],
-                        "type": "best_fields",
-                        "tie_breaker": 0.3
+            "bool": {
+                "should": [
+                    {
+                        "multi_match": {
+                            "query": query,
+                            "fields": ["title^3", "excerpt^2", "body_text"],
+                            "type": "best_fields",
+                            "tie_breaker": 0.3,
+                            "boost": bm25_weight
+                        }
+                    },
+                    {
+                        "knn": {
+                            "embedding": {
+                                "vector": query_embedding,
+                                "k": top_k * 2,  # Get more candidates for better hybrid results
+                                "boost": vector_weight
+                            }
+                        }
                     }
-                },
-                "script": {
-                    "source": f"(cosineSimilarity(params.query_vector, 'embedding') + 1.0) * {vector_weight} + _score * {bm25_weight}",
-                    "params": {"query_vector": query_embedding}
-                }
+                ]
             }
         },
         "_source": {
