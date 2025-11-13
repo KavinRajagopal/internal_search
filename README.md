@@ -61,14 +61,43 @@ uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload
 ### Interactive Documentation
 Visit: http://localhost:8000/docs
 
+### Search Modes
+
+The API supports **three search modes**:
+
+1. **BM25** (`search_type=bm25`): Traditional keyword-based search
+2. **Semantic** (`search_type=semantic`): Vector similarity search using embeddings
+3. **Hybrid** (`search_type=hybrid`): Combined BM25 + semantic search (default)
+
 ### Search Endpoints
 
 **POST /search** - Search with JSON body:
+
 ```bash
+# BM25 Search (keyword-based)
 curl -X POST "http://localhost:8000/search" \
      -H "Content-Type: application/json" \
      -d '{
        "query": "Donald Trump",
+       "search_type": "bm25",
+       "top_k": 10
+     }'
+
+# Semantic Search (vector similarity)
+curl -X POST "http://localhost:8000/search" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "query": "political controversy",
+       "search_type": "semantic",
+       "top_k": 10
+     }'
+
+# Hybrid Search (combines both with weights)
+curl -X POST "http://localhost:8000/search" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "query": "Donald Trump politics",
+       "search_type": "hybrid",
        "top_k": 10,
        "bm25_weight": 0.5,
        "vector_weight": 0.5
@@ -76,8 +105,16 @@ curl -X POST "http://localhost:8000/search" \
 ```
 
 **GET /search** - Search with query parameters:
+
 ```bash
-curl "http://localhost:8000/search?q=Donald+Trump&top_k=5"
+# BM25 Search
+curl "http://localhost:8000/search?q=Donald+Trump&search_type=bm25&top_k=5"
+
+# Semantic Search
+curl "http://localhost:8000/search?q=political+scandal&search_type=semantic&top_k=5"
+
+# Hybrid Search (default)
+curl "http://localhost:8000/search?q=election+news&search_type=hybrid&top_k=5"
 ```
 
 **GET /health** - Health check:
@@ -94,9 +131,12 @@ curl "http://localhost:8000/health"
 ## Architecture
 
 - **Embedding Model:** `all-MiniLM-L6-v2` (384 dimensions)
-- **Search Type:** Hybrid (BM25 + Vector Similarity)
+- **Search Modes:** 
+  - BM25: Keyword-based ranking (TF-IDF)
+  - Semantic: Vector similarity (cosine similarity)
+  - Hybrid: Weighted combination of BM25 + Semantic
 - **Database:** OpenSearch with k-NN plugin
-- **API Framework:** FastAPI
+- **API Framework:** FastAPI with interactive docs
 
 ## Field Mapping
 
