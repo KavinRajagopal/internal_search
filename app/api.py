@@ -11,6 +11,7 @@ from sentence_transformers import SentenceTransformer
 from pathlib import Path
 from enum import Enum
 import os
+from app.query_processor import QueryProcessor
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -19,9 +20,11 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# Global variables for OpenSearch client and embedding model
+# Global variables for OpenSearch client, embedding model, query processor, and suggestions cache
 opensearch_client: Optional[OpenSearch] = None
 embedding_model: Optional[SentenceTransformer] = None
+query_processor: Optional[QueryProcessor] = None
+suggestions_cache: List[str] = []
 
 # Configuration
 OPENSEARCH_HOST = os.getenv("OPENSEARCH_HOST", "localhost")
@@ -35,6 +38,15 @@ class SearchType(str, Enum):
     BM25 = "bm25"
     SEMANTIC = "semantic"
     HYBRID = "hybrid"
+    RRF = "rrf"
+
+
+class SortBy(str, Enum):
+    """Sort option enumeration."""
+    RELEVANCE = "relevance"
+    DATE_DESC = "date_desc"
+    DATE_ASC = "date_asc"
+    TITLE_AZ = "title_az"
 
 
 class SearchRequest(BaseModel):
@@ -44,6 +56,7 @@ class SearchRequest(BaseModel):
     top_k: int = 10
     bm25_weight: float = 0.5
     vector_weight: float = 0.5
+    sort_by: SortBy = SortBy.RELEVANCE
 
 
 class SearchResult(BaseModel):
@@ -60,6 +73,7 @@ class SearchResult(BaseModel):
 class SearchResponse(BaseModel):
     """Response model for search."""
     query: str
+    processed_query: Optional[str] = None
     total_results: int
     results: List[SearchResult]
 
@@ -87,6 +101,48 @@ def get_embedding_model() -> SentenceTransformer:
     return embedding_model
 
 
+def get_query_processor() -> QueryProcessor:
+    """Get or create query processor."""
+    global query_processor
+    if query_processor is None:
+        print("Initializing query processor...")
+        query_processor = QueryProcessor()
+    return query_processor
+
+
+def load_suggestions():
+    """Load article titles from OpenSearch for autocomplete suggestions."""
+    global suggestions_cache
+    try:
+        client = get_opensearch_client()
+        if not client.indices.exists(index=INDEX_NAME):
+            print("Index does not exist yet, skipping suggestions loading")
+            return
+        
+        # Get article titles (limit to 1000 for performance)
+        response = client.search(
+            index=INDEX_NAME,
+            body={
+                "size": 1000,
+                "_source": ["title"],
+                "query": {"match_all": {}}
+            }
+        )
+        
+        # Extract unique titles
+        titles = set()
+        for hit in response['hits']['hits']:
+            title = hit['_source'].get('title')
+            if title and isinstance(title, str):
+                titles.add(title.strip())
+        
+        suggestions_cache = sorted(list(titles))
+        print(f"Loaded {len(suggestions_cache)} article titles for suggestions")
+    except Exception as e:
+        print(f"Warning: Could not load suggestions: {e}")
+        suggestions_cache = []
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize connections on startup."""
@@ -101,6 +157,10 @@ async def startup_event():
     
     # Load embedding model
     get_embedding_model()
+    
+    # Load suggestions
+    load_suggestions()
+    
     print("FastAPI app ready!")
 
 
@@ -148,6 +208,34 @@ async def health_check():
             "status": "unhealthy",
             "error": str(e)
         }
+
+
+@app.get("/suggestions")
+async def get_suggestions(
+    q: str = Query(..., min_length=2, description="Query prefix for suggestions"),
+    limit: int = Query(10, ge=1, le=50, description="Maximum number of suggestions")
+):
+    """
+    Get search suggestions based on query prefix.
+    Returns matching article titles.
+    
+    Args:
+        q: Query prefix (minimum 2 characters)
+        limit: Maximum number of suggestions to return
+    
+    Returns:
+        List of matching titles
+    """
+    if not q or len(q) < 2:
+        return []
+    
+    q_lower = q.lower()
+    
+    # Find matching titles
+    matches = [title for title in suggestions_cache if q_lower in title.lower()]
+    
+    # Return limited results
+    return matches[:limit]
 
 
 def build_bm25_query(query: str, top_k: int) -> Dict[str, Any]:
@@ -225,6 +313,86 @@ def build_hybrid_query(query: str, query_embedding: List[float], top_k: int,
     }
 
 
+def apply_sort(search_body: Dict[str, Any], sort_by: SortBy) -> Dict[str, Any]:
+    """
+    Apply sort clause to search query.
+    
+    Args:
+        search_body: OpenSearch query body
+        sort_by: Sort option
+    
+    Returns:
+        Modified search body with sort clause
+    """
+    if sort_by == SortBy.RELEVANCE:
+        # Default relevance sorting (by _score)
+        return search_body
+    
+    # Add sort clause
+    if sort_by == SortBy.DATE_DESC:
+        search_body["sort"] = [{"published_at": {"order": "desc"}}, "_score"]
+    elif sort_by == SortBy.DATE_ASC:
+        search_body["sort"] = [{"published_at": {"order": "asc"}}, "_score"]
+    elif sort_by == SortBy.TITLE_AZ:
+        search_body["sort"] = [{"title.keyword": {"order": "asc"}}, "_score"]
+    
+    return search_body
+
+
+def reciprocal_rank_fusion(bm25_results: List[Dict], semantic_results: List[Dict], 
+                           k: int = 60, top_k: int = 10) -> List[SearchResult]:
+    """
+    Merge BM25 and semantic search results using Reciprocal Rank Fusion (RRF) algorithm.
+    
+    RRF Formula: score(doc) = sum over all ranking lists: 1/(k + rank_in_list)
+    where k is a constant (typically 60) that reduces the impact of high rankings.
+    
+    Args:
+        bm25_results: Results from BM25 search
+        semantic_results: Results from semantic search
+        k: RRF constant (default 60)
+        top_k: Number of final results to return
+    
+    Returns:
+        Merged and re-ranked results as SearchResult objects
+    """
+    rrf_scores = {}
+    doc_data = {}
+    
+    # Process BM25 results
+    for rank, hit in enumerate(bm25_results, 1):
+        doc_id = hit['_source']['id']
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1.0 / (k + rank)
+        if doc_id not in doc_data:
+            doc_data[doc_id] = hit['_source']
+    
+    # Process semantic results
+    for rank, hit in enumerate(semantic_results, 1):
+        doc_id = hit['_source']['id']
+        rrf_scores[doc_id] = rrf_scores.get(doc_id, 0) + 1.0 / (k + rank)
+        if doc_id not in doc_data:
+            doc_data[doc_id] = hit['_source']
+    
+    # Sort by RRF score (descending) and take top k
+    sorted_docs = sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)[:top_k]
+    
+    # Build SearchResult objects
+    results = []
+    for doc_id, score in sorted_docs:
+        source = doc_data[doc_id]
+        results.append(SearchResult(
+            id=source.get('id', doc_id),
+            title=source.get('title'),
+            excerpt=source.get('excerpt'),
+            body_text=source.get('body_text'),
+            tags=source.get('tags', []),
+            published_at=source.get('published_at'),
+            score=score
+        ))
+    
+    return results
+
+
 @app.post("/search", response_model=SearchResponse)
 async def search_articles(request: SearchRequest):
     """
@@ -238,6 +406,7 @@ async def search_articles(request: SearchRequest):
     """
     try:
         client = get_opensearch_client()
+        processor = get_query_processor()
         
         # Check if index exists
         if not client.indices.exists(index=INDEX_NAME):
@@ -246,21 +415,74 @@ async def search_articles(request: SearchRequest):
                 detail=f"Index '{INDEX_NAME}' does not exist. Please run index_bm25.py first."
             )
         
+        # Preprocess query
+        original_query = request.query
+        processed_query, was_corrected = processor.process(original_query)
+        
+        # Use processed query for search
+        search_query = processed_query if processed_query else original_query
+        
         # Build query based on search type
         if request.search_type == SearchType.BM25:
             # BM25 only - keyword-based search
-            search_body = build_bm25_query(request.query, request.top_k)
+            search_body = build_bm25_query(search_query, request.top_k)
+            search_body = apply_sort(search_body, request.sort_by)
+            response = client.search(index=INDEX_NAME, body=search_body)
+            
+            # Format results
+            results = []
+            for hit in response['hits']['hits']:
+                source = hit['_source']
+                results.append(SearchResult(
+                    id=source.get('id', hit['_id']),
+                    title=source.get('title'),
+                    excerpt=source.get('excerpt'),
+                    body_text=source.get('body_text'),
+                    tags=source.get('tags', []),
+                    published_at=source.get('published_at'),
+                    score=hit['_score']
+                ))
+            
+            return SearchResponse(
+                query=original_query,
+                processed_query=processed_query if was_corrected else None,
+                total_results=response['hits']['total']['value'],
+                results=results
+            )
             
         elif request.search_type == SearchType.SEMANTIC:
             # Semantic only - vector similarity search
             model = get_embedding_model()
-            query_embedding = model.encode(request.query, show_progress_bar=False).tolist()
+            query_embedding = model.encode(search_query, show_progress_bar=False).tolist()
             search_body = build_semantic_query(query_embedding, request.top_k)
+            search_body = apply_sort(search_body, request.sort_by)
+            response = client.search(index=INDEX_NAME, body=search_body)
             
-        else:  # SearchType.HYBRID
-            # Hybrid - combination of BM25 and vector search
+            # Format results
+            results = []
+            for hit in response['hits']['hits']:
+                source = hit['_source']
+                results.append(SearchResult(
+                    id=source.get('id', hit['_id']),
+                    title=source.get('title'),
+                    excerpt=source.get('excerpt'),
+                    body_text=source.get('body_text'),
+                    tags=source.get('tags', []),
+                    published_at=source.get('published_at'),
+                    score=hit['_score']
+                ))
+            
+            return SearchResponse(
+                query=original_query,
+                processed_query=processed_query if was_corrected else None,
+                total_results=response['hits']['total']['value'],
+                results=results
+            )
+            
+        elif request.search_type == SearchType.HYBRID:
+            # Hybrid - combination of BM25 and vector search using bool query
             model = get_embedding_model()
-            query_embedding = model.encode(request.query, show_progress_bar=False).tolist()
+            query_embedding = model.encode(search_query, show_progress_bar=False).tolist()
             
             # Normalize weights
             total_weight = request.bm25_weight + request.vector_weight
@@ -272,32 +494,68 @@ async def search_articles(request: SearchRequest):
                 vector_weight = request.vector_weight / total_weight
             
             search_body = build_hybrid_query(
-                request.query, query_embedding, request.top_k,
+                search_query, query_embedding, request.top_k,
                 bm25_weight, vector_weight
             )
-        
-        # Execute search
-        response = client.search(index=INDEX_NAME, body=search_body)
-        
-        # Format results
-        results = []
-        for hit in response['hits']['hits']:
-            source = hit['_source']
-            results.append(SearchResult(
-                id=source.get('id', hit['_id']),
-                title=source.get('title'),
-                excerpt=source.get('excerpt'),
-                body_text=source.get('body_text'),
-                tags=source.get('tags', []),
-                published_at=source.get('published_at'),
-                score=hit['_score']
-            ))
-        
-        return SearchResponse(
-            query=request.query,
-            total_results=response['hits']['total']['value'],
-            results=results
-        )
+            search_body = apply_sort(search_body, request.sort_by)
+            response = client.search(index=INDEX_NAME, body=search_body)
+            
+            # Format results
+            results = []
+            for hit in response['hits']['hits']:
+                source = hit['_source']
+                results.append(SearchResult(
+                    id=source.get('id', hit['_id']),
+                    title=source.get('title'),
+                    excerpt=source.get('excerpt'),
+                    body_text=source.get('body_text'),
+                    tags=source.get('tags', []),
+                    published_at=source.get('published_at'),
+                    score=hit['_score']
+                ))
+            
+            return SearchResponse(
+                query=original_query,
+                processed_query=processed_query if was_corrected else None,
+                total_results=response['hits']['total']['value'],
+                results=results
+            )
+            
+        else:  # SearchType.RRF
+            # RRF - Reciprocal Rank Fusion combining BM25 and semantic results
+            model = get_embedding_model()
+            query_embedding = model.encode(search_query, show_progress_bar=False).tolist()
+            
+            # Execute BM25 search (get 2x results for better fusion)
+            bm25_body = build_bm25_query(search_query, request.top_k * 2)
+            bm25_body = apply_sort(bm25_body, request.sort_by)
+            bm25_response = client.search(index=INDEX_NAME, body=bm25_body)
+            
+            # Execute semantic search (get 2x results for better fusion)
+            semantic_body = build_semantic_query(query_embedding, request.top_k * 2)
+            semantic_body = apply_sort(semantic_body, request.sort_by)
+            semantic_response = client.search(index=INDEX_NAME, body=semantic_body)
+            
+            # Merge results using RRF
+            results = reciprocal_rank_fusion(
+                bm25_response['hits']['hits'],
+                semantic_response['hits']['hits'],
+                k=60,
+                top_k=request.top_k
+            )
+            
+            # Get total results (approximate - use max of both searches)
+            total_results = max(
+                bm25_response['hits']['total']['value'],
+                semantic_response['hits']['total']['value']
+            )
+            
+            return SearchResponse(
+                query=original_query,
+                processed_query=processed_query if was_corrected else None,
+                total_results=total_results,
+                results=results
+            )
     
     except HTTPException:
         raise

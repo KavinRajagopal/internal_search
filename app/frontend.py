@@ -78,14 +78,15 @@ def check_api_health() -> bool:
         return False
 
 
-def perform_search(query: str, search_type: str, top_k: int) -> Dict[str, Any]:
+def perform_search(query: str, search_type: str, top_k: int, sort_by: str = "relevance") -> Dict[str, Any]:
     """
     Perform search via the FastAPI backend.
     
     Args:
         query: Search query string
-        search_type: One of 'bm25', 'semantic', 'hybrid'
+        search_type: One of 'bm25', 'semantic', 'hybrid', 'rrf'
         top_k: Number of results to return
+        sort_by: Sort option
     
     Returns:
         API response as dictionary
@@ -95,7 +96,8 @@ def perform_search(query: str, search_type: str, top_k: int) -> Dict[str, Any]:
         "search_type": search_type.lower(),
         "top_k": top_k,
         "bm25_weight": 0.5,
-        "vector_weight": 0.5
+        "vector_weight": 0.5,
+        "sort_by": sort_by.lower()
     }
     
     try:
@@ -105,6 +107,33 @@ def perform_search(query: str, search_type: str, top_k: int) -> Dict[str, Any]:
     except requests.exceptions.RequestException as e:
         st.error(f"Error connecting to API: {str(e)}")
         return None
+
+
+def get_suggestions(query_prefix: str, limit: int = 5) -> List[str]:
+    """
+    Get search suggestions from the API.
+    
+    Args:
+        query_prefix: Query prefix to get suggestions for
+        limit: Maximum number of suggestions
+    
+    Returns:
+        List of suggestions
+    """
+    if not query_prefix or len(query_prefix) < 2:
+        return []
+    
+    try:
+        response = requests.get(
+            f"{API_URL}/suggestions",
+            params={"q": query_prefix, "limit": limit},
+            timeout=2
+        )
+        if response.ok:
+            return response.json()
+    except:
+        pass
+    return []
 
 
 def display_result(result: Dict[str, Any], index: int):
@@ -163,11 +192,13 @@ def main():
         # Search type selection
         search_type = st.radio(
             "Search Type",
-            ["BM25", "Semantic", "Hybrid"],
+            ["BM25", "Semantic", "Hybrid", "RRF"],
+            index=2,  # Default to Hybrid
             help="""
             - **BM25**: Keyword-based text search (classic search)
             - **Semantic**: Vector similarity search using embeddings
-            - **Hybrid**: Combined BM25 + semantic search (default 50/50 weights)
+            - **Hybrid**: Combined BM25 + semantic with bool query
+            - **RRF**: Reciprocal Rank Fusion (advanced hybrid algorithm)
             """
         )
         
@@ -180,6 +211,22 @@ def main():
             help="Maximum number of results to display"
         )
         
+        # Sort by selection
+        sort_by = st.selectbox(
+            "Sort Results By",
+            ["Relevance", "Newest First", "Oldest First", "Title A-Z"],
+            help="Choose how to sort search results"
+        )
+        
+        # Map display names to API values
+        sort_map = {
+            "Relevance": "relevance",
+            "Newest First": "date_desc",
+            "Oldest First": "date_asc",
+            "Title A-Z": "title_az"
+        }
+        sort_by_value = sort_map[sort_by]
+        
         # Search type info
         st.markdown("---")
         st.markdown("### 📊 Search Type Info")
@@ -187,34 +234,71 @@ def main():
             st.info("**BM25** uses traditional keyword matching with TF-IDF scoring. Best for exact term matches.")
         elif search_type == "Semantic":
             st.info("**Semantic** uses AI embeddings to find conceptually similar articles, even if they use different words.")
-        else:
-            st.info("**Hybrid** combines both BM25 and semantic search for balanced results using 50/50 weights.")
+        elif search_type == "Hybrid":
+            st.info("**Hybrid** combines both BM25 and semantic search using bool query with 50/50 weights.")
+        else:  # RRF
+            st.info("**RRF** uses Reciprocal Rank Fusion algorithm to intelligently merge BM25 and semantic results for optimal ranking.")
     
     # Main search interface
     st.markdown("### 🔎 Enter Your Search Query")
     
-    # Search input
+    # Initialize query in session state if not present
+    if 'search_query' not in st.session_state:
+        st.session_state.search_query = ""
+    
+    # Search input (using session state for dynamic updates)
     col1, col2 = st.columns([5, 1])
     with col1:
         query = st.text_input(
             "Search Query",
+            value=st.session_state.search_query,
             placeholder="e.g., healthcare policy, climate change, immigration reform...",
-            label_visibility="collapsed"
+            label_visibility="collapsed",
+            key="query_input"
         )
+        # Update session state when user types
+        st.session_state.search_query = query
     with col2:
         search_button = st.button("🔍 Search", type="primary", use_container_width=True)
     
+    # Show suggestions if query is long enough
+    if query and len(query) >= 2 and not search_button:
+        suggestions = get_suggestions(query, limit=5)
+        if suggestions:
+            st.markdown("**💡 Suggestions:**")
+            cols = st.columns(min(len(suggestions), 3))
+            for idx, suggestion in enumerate(suggestions[:3]):
+                with cols[idx]:
+                    # Truncate long titles for display
+                    display_title = suggestion if len(suggestion) <= 40 else suggestion[:37] + "..."
+                    if st.button(f"🔍 {display_title}", key=f"sug_{idx}", use_container_width=True):
+                        # Update session state and trigger search
+                        st.session_state.search_query = suggestion
+                        st.session_state.trigger_search = True
+                        st.rerun()
+    
+    # Check if search should be triggered
+    trigger_search = search_button or st.session_state.get('trigger_search', False)
+    
+    # Reset trigger flag
+    if st.session_state.get('trigger_search', False):
+        st.session_state.trigger_search = False
+    
     # Perform search
-    if search_button or (query and 'last_query' in st.session_state and st.session_state.last_query != query):
+    if trigger_search or (query and 'last_query' in st.session_state and st.session_state.last_query != query):
         if not query or query.strip() == "":
             st.warning("⚠️ Please enter a search query")
         else:
             st.session_state.last_query = query
             
             with st.spinner(f"Searching with {search_type} mode..."):
-                results = perform_search(query, search_type, top_k)
+                results = perform_search(query, search_type, top_k, sort_by_value)
             
             if results:
+                # Show preprocessing feedback if query was corrected
+                if results.get('processed_query') and results.get('processed_query') != results.get('query'):
+                    st.info(f"🔍 **Searched for:** {results.get('processed_query')} (corrected from: {results.get('query')})")
+                
                 # Display search info
                 total_results = results.get('total_results', 0)
                 returned_results = len(results.get('results', []))
@@ -222,13 +306,15 @@ def main():
                 st.markdown("---")
                 st.markdown(f"### 📊 Search Results")
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Total Matches", f"{total_results:,}")
                 with col2:
                     st.metric("Showing Results", returned_results)
                 with col3:
                     st.metric("Search Type", search_type)
+                with col4:
+                    st.metric("Sort By", sort_by)
                 
                 st.markdown("---")
                 

@@ -6,4 +6,5 @@ fastapi
 uvicorn[standard]
 streamlit
 requests
+pyspellchecker
 
