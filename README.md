@@ -56,6 +56,27 @@ Or with auto-reload:
 uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+The API will be available at: http://localhost:8000
+
+### 5. Launch the Streamlit Frontend (Optional)
+
+For a user-friendly web interface, you can use the Streamlit frontend:
+
+```bash
+streamlit run app/frontend.py
+```
+
+The frontend will be available at: http://localhost:8501
+
+**Features:**
+- 🔍 Search bar with real-time search
+- 📊 Choose between BM25, Semantic, or Hybrid search modes
+- 🎨 Clean, intuitive interface
+- 📄 Expandable article previews
+- ⚡ Real-time API health checking
+
+**Note:** The FastAPI backend must be running on port 8000 for the frontend to work.
+
 ## API Usage
 
 ### Interactive Documentation
@@ -156,5 +177,12 @@ See `app/requirements.txt`:
 - python-dateutil
 - fastapi
 - uvicorn[standard]
+- streamlit
+- requests
+
+Install all dependencies:
+```bash
+pip install -r app/requirements.txt
+```
 
 

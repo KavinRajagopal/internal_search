@@ -4,4 +4,6 @@ pandas
 python-dateutil
 fastapi
 uvicorn[standard]
+streamlit
+requests
 
