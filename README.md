@@ -2,22 +2,77 @@
 
 Hybrid BM25 + Vector Search system for articles using OpenSearch and FastAPI.
 
-## Setup
+## Table of Contents
+- [Quick Start](#quick-start)
+  - [Automated Orchestration (Recommended)](#automated-orchestration-recommended)
+  - [Initial Setup (First Time Only)](#initial-setup-first-time-only)
+- [Manual Setup Workflow](#manual-setup-workflow-for-first-time-data-preparation)
+- [API Usage](#api-usage)
+- [Project Structure](#project-structure)
+- [Architecture](#architecture)
+- [User Feedback & Analytics](#user-feedback--analytics)
+- [Running Multiple Components](#running-multiple-components)
+- [Orchestration Scripts Reference](#orchestration-scripts-reference)
+- [Troubleshooting](#troubleshooting)
+- [Dependencies](#dependencies)
 
-### Virtual Environment
-A virtual environment named `article_s` has been created with all dependencies installed.
+---
 
-To activate it:
+## Quick Start
+
+### Automated Orchestration (Recommended)
+
+Start all services with a single command:
+
 ```bash
-source article_s/bin/activate
+./orchestration/start.sh
 ```
 
-Or use the convenience script:
+This will automatically:
+- ✅ Start OpenSearch (Docker container)
+- ✅ Start FastAPI Backend (port 8000)
+- ✅ Start Search Frontend (port 8501)
+- ✅ Start Analytics Dashboard (port 8502)
+- ✅ Check for conflicts and skip already-running services
+
+**Access Points:**
+- 🔍 Search Frontend: http://localhost:8501
+- 📊 Analytics Dashboard: http://localhost:8502
+- 📚 API Docs: http://localhost:8000/docs
+- 🔧 OpenSearch: http://localhost:9200
+
+**Other Orchestration Commands:**
 ```bash
-./run_search.sh
+./orchestration/status.sh    # Check service status
+./orchestration/logs.sh      # View all logs (tail -f)
+./orchestration/logs.sh api  # View specific service logs
+./orchestration/stop.sh      # Stop all services
 ```
 
-## Workflow
+### Initial Setup (First Time Only)
+
+Before using the orchestration scripts for the first time:
+
+1. **Ensure virtual environment exists:**
+   ```bash
+   # If not already created
+   python -m venv article_s
+   source article_s/bin/activate
+   pip install -r app/requirements.txt
+   ```
+
+2. **Prepare the data (if not done):**
+   ```bash
+   source article_s/bin/activate
+   python app/convert_to_jsonl.py  # Convert CSV to JSONL with embeddings
+   python app/index_bm25.py        # Index into OpenSearch
+   ```
+
+Once data is indexed, you can use `./orchestration/start.sh` anytime to launch all services.
+
+## Manual Setup Workflow (For First-Time Data Preparation)
+
+If you're setting up the system for the first time, follow these steps to prepare the data:
 
 ### 1. Start OpenSearch
 ```bash
@@ -26,6 +81,7 @@ docker-compose up -d
 
 ### 2. Convert CSV to JSONL with Embeddings
 ```bash
+source article_s/bin/activate
 python app/convert_to_jsonl.py
 ```
 
@@ -46,36 +102,39 @@ This will:
 - Bulk index all documents with embeddings
 - Enable hybrid BM25 + vector search
 
-### 4. Start the FastAPI Server
+### 4. Start All Services
+
+After data is indexed, you have two options:
+
+**Option A: Use Orchestration Scripts (Recommended)**
 ```bash
-python app/api.py
+./orchestration/start.sh
 ```
 
-Or with auto-reload:
+**Option B: Start Services Manually**
+
+FastAPI Server:
 ```bash
 uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The API will be available at: http://localhost:8000
-
-### 5. Launch the Streamlit Frontend (Optional)
-
-For a user-friendly web interface, you can use the Streamlit frontend:
-
+Streamlit Frontend:
 ```bash
 streamlit run app/frontend.py
 ```
 
-The frontend will be available at: http://localhost:8501
+Analytics Dashboard (Optional):
+```bash
+streamlit run app/analytics_dashboard.py --server.port 8502
+```
 
-**Features:**
+### Frontend Features
 - 🔍 Search bar with real-time search
 - 📊 Choose between BM25, Semantic, or Hybrid search modes
 - 🎨 Clean, intuitive interface
 - 📄 Expandable article previews
 - ⚡ Real-time API health checking
-
-**Note:** The FastAPI backend must be running on port 8000 for the frontend to work.
+- 👍👎 User feedback collection
 
 ## API Usage
 
@@ -143,11 +202,53 @@ curl "http://localhost:8000/search?q=election+news&search_type=hybrid&top_k=5"
 curl "http://localhost:8000/health"
 ```
 
+## Project Structure
+
+```
+internal_search/
+├── app/                      # Application code
+│   ├── api.py               # FastAPI backend
+│   ├── frontend.py          # Streamlit search interface
+│   ├── analytics_dashboard.py  # Analytics dashboard
+│   ├── index_bm25.py        # OpenSearch indexing
+│   ├── convert_to_jsonl.py  # CSV to JSONL converter
+│   ├── query_processor.py   # Query processing logic
+│   ├── database.py          # SQLite database for feedback
+│   └── requirements.txt     # Python dependencies
+├── data/                     # Data files
+│   ├── Fake.csv            # Source CSV data
+│   └── articles.jsonl      # Generated JSONL with embeddings
+├── orchestration/           # Service orchestration scripts
+│   ├── start.sh            # Start all services
+│   ├── stop.sh             # Stop all services
+│   ├── status.sh           # Check service status
+│   ├── logs.sh             # View service logs
+│   ├── logs/               # Service logs (generated)
+│   │   ├── api.log
+│   │   ├── frontend.log
+│   │   └── analytics.log
+│   └── .pids/              # Process IDs (generated)
+├── opensearch/              # OpenSearch configuration
+│   └── mapping.json        # Index mapping definition
+├── article_s/               # Virtual environment (Python packages)
+├── docker-compose.yml       # OpenSearch Docker setup
+├── feedback.db             # SQLite database (generated)
+└── README.md               # This file
+```
+
+### Generated Files (Gitignored)
+These files are automatically created during runtime:
+- `data/articles.jsonl` - JSONL output with embeddings
+- `orchestration/logs/*.log` - Service logs
+- `orchestration/.pids/*` - Process ID files
+- `feedback.db` - SQLite database for user feedback
+
 ## File Locations
 
 - **JSONL Output:** `data/articles.jsonl`
 - **Embeddings:** Included in each JSON document (384-dimensional vector)
 - **OpenSearch Index:** `articles` (localhost:9200)
+- **Feedback Database:** `feedback.db` (SQLite, in project root)
 
 ## Architecture
 
@@ -285,28 +386,40 @@ rm feedback.db
 # Database will be recreated on next API startup
 ```
 
-## Dependencies
-
-See `app/requirements.txt`:
-- sentence-transformers
-- opensearch-py
-- pandas
-- python-dateutil
-- fastapi
-- uvicorn[standard]
-- streamlit
-- requests
-- pyspellchecker
-- plotly
-
-Install all dependencies:
-```bash
-pip install -r app/requirements.txt
-```
-
 ## Running Multiple Components
 
-To run the complete system with all features:
+### Option 1: Orchestration Scripts (Recommended)
+
+Use the automated orchestration scripts for the easiest experience:
+
+```bash
+# Start all services (runs in background)
+./orchestration/start.sh
+
+# Check status
+./orchestration/status.sh
+
+# View logs (live tail)
+./orchestration/logs.sh           # All services
+./orchestration/logs.sh api       # API only
+./orchestration/logs.sh frontend  # Frontend only
+./orchestration/logs.sh analytics # Analytics only
+
+# Stop all services
+./orchestration/stop.sh
+```
+
+**Features:**
+- ✅ Runs all services in the background with nohup
+- ✅ Stores PIDs in `orchestration/.pids/` for easy management
+- ✅ Logs stored in `orchestration/logs/` (api.log, frontend.log, analytics.log)
+- ✅ Color-coded output and status indicators
+- ✅ Detects already-running services to avoid conflicts
+- ✅ Graceful shutdown with cleanup
+
+### Option 2: Manual Terminal Sessions
+
+If you prefer to run services in separate terminals for debugging:
 
 1. **Terminal 1 - OpenSearch:**
    ```bash
@@ -337,4 +450,212 @@ To run the complete system with all features:
 - API Docs: http://localhost:8000/docs
 - OpenSearch: http://localhost:9200
 
+## Orchestration Scripts Reference
+
+The `orchestration/` directory contains automation scripts for managing the entire system:
+
+### start.sh
+Starts all services (OpenSearch, API, Frontend, Analytics) in the background.
+
+```bash
+./orchestration/start.sh
+```
+
+**Features:**
+- Auto-detects and activates virtual environment
+- Checks for port conflicts before starting
+- Stores process IDs in `.pids/` directory
+- Outputs logs to `orchestration/logs/`
+- Shows access points and helpful commands
+
+### stop.sh
+Stops all running services gracefully.
+
+```bash
+./orchestration/stop.sh
+```
+
+**Features:**
+- Terminates processes using stored PIDs
+- Falls back to port-based killing if needed
+- Stops Docker containers (OpenSearch)
+- Cleans up PID files
+- Reports number of services stopped
+
+### status.sh
+Checks the status of all services.
+
+```bash
+./orchestration/status.sh
+```
+
+**Features:**
+- Shows running/stopped status for each service
+- Displays PIDs and ports
+- Shows access URLs for running services
+- Displays log file sizes and modification times
+- Suggests next actions based on status
+
+### logs.sh
+Views logs from running services.
+
+```bash
+# View all logs (combined, live tail)
+./orchestration/logs.sh
+
+# View specific service logs
+./orchestration/logs.sh api
+./orchestration/logs.sh frontend
+./orchestration/logs.sh analytics
+```
+
+**Features:**
+- Live tail with `tail -f`
+- Color-coded output
+- Validates log file existence
+- Can view individual or combined logs
+- Ctrl+C to exit
+
+## Troubleshooting
+
+### Services Won't Start
+
+**Port already in use:**
+```bash
+# Check what's running on the ports
+lsof -i :8000  # API
+lsof -i :8501  # Frontend
+lsof -i :8502  # Analytics
+lsof -i :9200  # OpenSearch
+
+# Stop all services and try again
+./orchestration/stop.sh
+./orchestration/start.sh
+```
+
+**Virtual environment not found:**
+```bash
+# Create the virtual environment
+python -m venv article_s
+source article_s/bin/activate
+pip install -r app/requirements.txt
+```
+
+**Docker/OpenSearch issues:**
+```bash
+# Check Docker is running
+docker ps
+
+# Restart OpenSearch
+docker-compose down
+docker-compose up -d
+
+# Check OpenSearch health
+curl http://localhost:9200/_cluster/health?pretty
+```
+
+### Services Not Responding
+
+**Check service status:**
+```bash
+./orchestration/status.sh
+```
+
+**View logs for errors:**
+```bash
+./orchestration/logs.sh           # All logs
+./orchestration/logs.sh api       # API logs only
+./orchestration/logs.sh frontend  # Frontend logs only
+```
+
+**Restart specific service:**
+```bash
+# Stop all
+./orchestration/stop.sh
+
+# Start again
+./orchestration/start.sh
+```
+
+### Search Not Working
+
+**No results returned:**
+- Ensure data is indexed: `python app/index_bm25.py`
+- Check OpenSearch has data: `curl http://localhost:9200/articles/_count`
+- Verify API is running: `curl http://localhost:8000/health`
+
+**Slow searches:**
+- Semantic search is slower than BM25 (embeddings computation)
+- Hybrid search combines both, so takes longer
+- Consider reducing `top_k` parameter for faster results
+
+### Frontend/Analytics Not Loading
+
+**Browser shows "Connection refused":**
+- Check if services are running: `./orchestration/status.sh`
+- Ensure API is running on port 8000 (frontend depends on it)
+- Check logs: `./orchestration/logs.sh frontend`
+
+**Streamlit shows errors:**
+- Check Python dependencies are installed: `pip install -r app/requirements.txt`
+- Verify virtual environment is activated: `source article_s/bin/activate`
+
+### Clean Reset
+
+If all else fails, perform a clean reset:
+
+```bash
+# Stop everything
+./orchestration/stop.sh
+docker-compose down
+
+# Remove generated files
+rm -f feedback.db
+rm -rf orchestration/logs/*
+rm -rf orchestration/.pids/*
+
+# Restart OpenSearch
+docker-compose up -d
+sleep 10
+
+# Re-index data (if needed)
+source article_s/bin/activate
+python app/index_bm25.py
+
+# Start services
+./orchestration/start.sh
+```
+
+## Dependencies
+
+See `app/requirements.txt`:
+- sentence-transformers
+- opensearch-py
+- pandas
+- python-dateutil
+- fastapi
+- uvicorn[standard]
+- streamlit
+- requests
+- pyspellchecker
+- plotly
+
+Install all dependencies:
+```bash
+pip install -r app/requirements.txt
+```
+
+---
+
+## Summary
+
+This Article Search System provides a complete solution for searching articles using modern NLP techniques:
+
+1. **🚀 Quick Start:** Use `./orchestration/start.sh` to launch everything
+2. **🔍 Three Search Modes:** BM25, Semantic, and Hybrid search
+3. **📊 Analytics:** Track user behavior and search quality
+4. **💻 User-Friendly:** Beautiful Streamlit frontends for search and analytics
+5. **🛠️ Easy Management:** Orchestration scripts for starting, stopping, and monitoring
+
+For questions or issues, check the [Troubleshooting](#troubleshooting) section.
 
