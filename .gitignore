@@ -49,3 +49,13 @@ Thumbs.db
 .streamlit/
 *.streamlit/
 
+# Analytics database
+feedback.db
+*.db
+
+# Orchestration
+logs/
+!logs/.gitkeep
+.pids/
+nohup.out
+

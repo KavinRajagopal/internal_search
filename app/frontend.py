@@ -6,13 +6,15 @@ Provides a user-friendly interface for BM25, Semantic, and Hybrid search.
 
 import streamlit as st
 import requests
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 import json
+import uuid
 
 # Configuration
 API_URL = "http://localhost:8000"
 SEARCH_ENDPOINT = f"{API_URL}/search"
 HEALTH_ENDPOINT = f"{API_URL}/health"
+FEEDBACK_ENDPOINT = f"{API_URL}/feedback"
 
 # Page configuration
 st.set_page_config(
@@ -136,8 +138,66 @@ def get_suggestions(query_prefix: str, limit: int = 5) -> List[str]:
     return []
 
 
-def display_result(result: Dict[str, Any], index: int):
-    """Display a single search result."""
+def submit_feedback(
+    query: str,
+    doc_id: str,
+    doc_title: Optional[str],
+    search_type: str,
+    rating: int,
+    result_position: int,
+    search_log_id: Optional[int] = None,
+    session_id: Optional[str] = None
+) -> bool:
+    """
+    Submit user feedback to the API.
+    
+    Args:
+        query: Search query
+        doc_id: Document ID
+        doc_title: Document title
+        search_type: Type of search used
+        rating: 1 for thumbs up, -1 for thumbs down
+        result_position: Position in results (1-based)
+        search_log_id: Search log ID
+        session_id: Session ID
+    
+    Returns:
+        True if successful, False otherwise
+    """
+    payload = {
+        "query": query,
+        "doc_id": doc_id,
+        "doc_title": doc_title,
+        "search_type": search_type.lower(),
+        "rating": rating,
+        "result_position": result_position,
+        "search_log_id": search_log_id,
+        "session_id": session_id
+    }
+    
+    try:
+        response = requests.post(FEEDBACK_ENDPOINT, json=payload, timeout=5)
+        return response.ok
+    except:
+        return False
+
+
+def get_session_id() -> str:
+    """Get or create a session ID for tracking user behavior."""
+    if 'session_id' not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+    return st.session_state.session_id
+
+
+def display_result(
+    result: Dict[str, Any],
+    index: int,
+    query: str,
+    search_type: str,
+    search_log_id: Optional[int] = None,
+    session_id: Optional[str] = None
+):
+    """Display a single search result with feedback buttons."""
     with st.container():
         # Title
         st.markdown(f"### {index}. {result.get('title', 'Untitled')}")
@@ -167,11 +227,61 @@ def display_result(result: Dict[str, Any], index: int):
             with st.expander("📄 View Article Content"):
                 st.markdown(excerpt)
         
+        # Feedback section
+        st.markdown("**Was this result helpful?**")
+        col1, col2, col3 = st.columns([1, 1, 8])
+        
+        doc_id = result.get('id', '')
+        feedback_key = f"feedback_{doc_id}_{index}"
+        
+        # Check if feedback was already submitted for this result
+        if feedback_key not in st.session_state:
+            st.session_state[feedback_key] = None
+        
+        with col1:
+            if st.button("👍", key=f"up_{doc_id}_{index}", help="Helpful", disabled=st.session_state[feedback_key] is not None):
+                if submit_feedback(
+                    query=query,
+                    doc_id=doc_id,
+                    doc_title=result.get('title'),
+                    search_type=search_type,
+                    rating=1,
+                    result_position=index,
+                    search_log_id=search_log_id,
+                    session_id=session_id
+                ):
+                    st.session_state[feedback_key] = "positive"
+                    st.rerun()
+        
+        with col2:
+            if st.button("👎", key=f"down_{doc_id}_{index}", help="Not helpful", disabled=st.session_state[feedback_key] is not None):
+                if submit_feedback(
+                    query=query,
+                    doc_id=doc_id,
+                    doc_title=result.get('title'),
+                    search_type=search_type,
+                    rating=-1,
+                    result_position=index,
+                    search_log_id=search_log_id,
+                    session_id=session_id
+                ):
+                    st.session_state[feedback_key] = "negative"
+                    st.rerun()
+        
+        with col3:
+            if st.session_state[feedback_key] == "positive":
+                st.success("✅ Thanks for your feedback!")
+            elif st.session_state[feedback_key] == "negative":
+                st.info("📝 Thanks for your feedback!")
+        
         st.markdown("---")
 
 
 def main():
     """Main Streamlit application."""
+    
+    # Initialize session ID
+    session_id = get_session_id()
     
     # Header
     st.markdown('<div class="main-header">🔍 Article Search System</div>', unsafe_allow_html=True)
@@ -320,8 +430,16 @@ def main():
                 
                 # Display results
                 if returned_results > 0:
+                    search_log_id = results.get('search_log_id')
                     for idx, result in enumerate(results['results'], 1):
-                        display_result(result, idx)
+                        display_result(
+                            result=result,
+                            index=idx,
+                            query=query,
+                            search_type=search_type,
+                            search_log_id=search_log_id,
+                            session_id=session_id
+                        )
                 else:
                     st.info("No results found. Try a different query or search type.")
     

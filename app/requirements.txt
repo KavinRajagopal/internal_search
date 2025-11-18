@@ -7,4 +7,5 @@ uvicorn[standard]
 streamlit
 requests
 pyspellchecker
+plotly
 

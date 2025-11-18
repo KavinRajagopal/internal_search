@@ -168,6 +168,123 @@ CSV → OpenSearch:
 - `date` → `published_at` and `updated_at` (ISO format)
 - Generated: `id`, `embedding`
 
+## User Feedback & Analytics
+
+### Feedback Collection
+
+The system includes user feedback collection to improve search quality over time.
+
+**Features:**
+- 👍 Thumbs up / 👎 Thumbs down buttons on each search result
+- Feedback is stored with context (query, search type, result position, session)
+- Automatic search logging for all queries
+- Session tracking to understand user journeys
+
+**How it works:**
+1. Users perform searches through the frontend
+2. Each search is automatically logged with metadata
+3. Users can rate results as helpful (👍) or not helpful (👎)
+4. Feedback is stored in a SQLite database (`feedback.db`)
+5. Analytics dashboard aggregates this data for insights
+
+### Analytics Dashboard
+
+Launch the analytics dashboard to monitor search performance:
+
+```bash
+streamlit run app/analytics_dashboard.py --server.port 8502
+```
+
+The dashboard will be available at: http://localhost:8502
+
+**Dashboard Sections:**
+
+1. **📈 Overview Metrics**
+   - Total searches and unique queries
+   - Total feedback and satisfaction rate
+   - Average results per search
+
+2. **🔍 Search Statistics**
+   - Top 10 most searched queries
+   - Search type distribution (pie chart)
+   - Searches over time (line chart)
+
+3. **💬 Feedback Analysis**
+   - Feedback by search type (bar chart)
+   - Most helpful articles (top rated)
+   - Least helpful articles (need improvement)
+
+4. **🚨 Problem Areas**
+   - Zero-result queries that need attention
+   - Low-performing search types
+
+5. **🕐 Recent Activity**
+   - Last 20 searches with metadata
+   - Recent feedback submissions
+
+**Data Retention:**
+- The dashboard can show data for the last 1-30 days
+- Default view: Last 7 days
+- All data is stored in `feedback.db` (SQLite)
+
+### Database Schema
+
+**search_logs table:**
+- Stores every search query with metadata
+- Fields: query, processed_query, search_type, sort_by, total_results, timestamp, session_id
+
+**feedback table:**
+- Stores user feedback on search results
+- Fields: query, doc_id, doc_title, search_type, rating (-1 or 1), result_position, timestamp, session_id
+- Links to search_logs via foreign key
+
+### API Endpoints
+
+**POST /feedback** - Submit user feedback:
+```bash
+curl -X POST "http://localhost:8000/feedback" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "query": "healthcare policy",
+       "doc_id": "123",
+       "doc_title": "Healthcare Reform Act",
+       "search_type": "hybrid",
+       "rating": 1,
+       "result_position": 1,
+       "search_log_id": 456,
+       "session_id": "abc-123"
+     }'
+```
+
+**GET /analytics** - Get analytics data:
+```bash
+# Get analytics for last 7 days
+curl "http://localhost:8000/analytics?days=7"
+
+# Get analytics for last 30 days
+curl "http://localhost:8000/analytics?days=30"
+```
+
+Returns comprehensive analytics including:
+- Overview statistics
+- Top queries and zero-result queries
+- Search type usage
+- Feedback by search type
+- Most/least helpful articles
+- Recent searches and feedback
+
+### Database File Location
+
+- **Database:** `feedback.db` (SQLite, in project root)
+- **Automatically created** on first API startup
+- **Gitignored** to prevent tracking user data
+
+To reset analytics data:
+```bash
+rm feedback.db
+# Database will be recreated on next API startup
+```
+
 ## Dependencies
 
 See `app/requirements.txt`:
@@ -179,10 +296,45 @@ See `app/requirements.txt`:
 - uvicorn[standard]
 - streamlit
 - requests
+- pyspellchecker
+- plotly
 
 Install all dependencies:
 ```bash
 pip install -r app/requirements.txt
 ```
+
+## Running Multiple Components
+
+To run the complete system with all features:
+
+1. **Terminal 1 - OpenSearch:**
+   ```bash
+   docker-compose up
+   ```
+
+2. **Terminal 2 - FastAPI Backend:**
+   ```bash
+   source article_s/bin/activate
+   uvicorn app.api:app --host 0.0.0.0 --port 8000
+   ```
+
+3. **Terminal 3 - Search Frontend:**
+   ```bash
+   source article_s/bin/activate
+   streamlit run app/frontend.py
+   ```
+
+4. **Terminal 4 - Analytics Dashboard (Optional):**
+   ```bash
+   source article_s/bin/activate
+   streamlit run app/analytics_dashboard.py --server.port 8502
+   ```
+
+**Access Points:**
+- Search Frontend: http://localhost:8501
+- Analytics Dashboard: http://localhost:8502
+- API Docs: http://localhost:8000/docs
+- OpenSearch: http://localhost:9200
 
 

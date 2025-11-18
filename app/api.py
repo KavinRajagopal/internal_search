@@ -12,6 +12,7 @@ from pathlib import Path
 from enum import Enum
 import os
 from app.query_processor import QueryProcessor
+from app.database import log_search, save_feedback, get_analytics
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -76,6 +77,19 @@ class SearchResponse(BaseModel):
     processed_query: Optional[str] = None
     total_results: int
     results: List[SearchResult]
+    search_log_id: Optional[int] = None
+
+
+class FeedbackRequest(BaseModel):
+    """Request model for user feedback."""
+    query: str
+    doc_id: str
+    doc_title: Optional[str]
+    search_type: str
+    rating: int  # 1 for thumbs up, -1 for thumbs down
+    result_position: int
+    search_log_id: Optional[int] = None
+    session_id: Optional[str] = None
 
 
 def get_opensearch_client() -> OpenSearch:
@@ -236,6 +250,66 @@ async def get_suggestions(
     
     # Return limited results
     return matches[:limit]
+
+
+@app.post("/feedback")
+async def submit_feedback(request: FeedbackRequest):
+    """
+    Submit user feedback on a search result.
+    
+    Args:
+        request: FeedbackRequest with query, doc_id, rating, etc.
+    
+    Returns:
+        Success status and feedback ID
+    """
+    try:
+        # Validate rating
+        if request.rating not in [1, -1]:
+            raise HTTPException(
+                status_code=400,
+                detail="Rating must be 1 (thumbs up) or -1 (thumbs down)"
+            )
+        
+        # Save feedback to database
+        feedback_id = save_feedback(
+            query=request.query,
+            doc_id=request.doc_id,
+            doc_title=request.doc_title,
+            search_type=request.search_type,
+            rating=request.rating,
+            result_position=request.result_position,
+            search_log_id=request.search_log_id,
+            session_id=request.session_id
+        )
+        
+        return {
+            "status": "success",
+            "feedback_id": feedback_id,
+            "message": "Thank you for your feedback!"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save feedback: {str(e)}")
+
+
+@app.get("/analytics")
+async def get_analytics_data(
+    days: int = Query(7, ge=1, le=365, description="Number of days to look back")
+):
+    """
+    Get search analytics and feedback statistics.
+    
+    Args:
+        days: Number of days to look back (1-365)
+    
+    Returns:
+        Analytics data including search stats, feedback, top queries, etc.
+    """
+    try:
+        analytics = get_analytics(days=days)
+        return analytics
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve analytics: {str(e)}")
 
 
 def build_bm25_query(query: str, top_k: int) -> Dict[str, Any]:
@@ -443,11 +517,23 @@ async def search_articles(request: SearchRequest):
                     score=hit['_score']
                 ))
             
+            # Log search
+            search_log_id = log_search(
+                query=original_query,
+                processed_query=processed_query if was_corrected else None,
+                search_type=request.search_type.value,
+                sort_by=request.sort_by.value,
+                total_results=response['hits']['total']['value'],
+                results_returned=len(results),
+                session_id=None  # Will be added from frontend
+            )
+            
             return SearchResponse(
                 query=original_query,
                 processed_query=processed_query if was_corrected else None,
                 total_results=response['hits']['total']['value'],
-                results=results
+                results=results,
+                search_log_id=search_log_id
             )
             
         elif request.search_type == SearchType.SEMANTIC:
@@ -472,11 +558,23 @@ async def search_articles(request: SearchRequest):
                     score=hit['_score']
                 ))
             
+            # Log search
+            search_log_id = log_search(
+                query=original_query,
+                processed_query=processed_query if was_corrected else None,
+                search_type=request.search_type.value,
+                sort_by=request.sort_by.value,
+                total_results=response['hits']['total']['value'],
+                results_returned=len(results),
+                session_id=None  # Will be added from frontend
+            )
+            
             return SearchResponse(
                 query=original_query,
                 processed_query=processed_query if was_corrected else None,
                 total_results=response['hits']['total']['value'],
-                results=results
+                results=results,
+                search_log_id=search_log_id
             )
             
         elif request.search_type == SearchType.HYBRID:
@@ -514,11 +612,23 @@ async def search_articles(request: SearchRequest):
                     score=hit['_score']
                 ))
             
+            # Log search
+            search_log_id = log_search(
+                query=original_query,
+                processed_query=processed_query if was_corrected else None,
+                search_type=request.search_type.value,
+                sort_by=request.sort_by.value,
+                total_results=response['hits']['total']['value'],
+                results_returned=len(results),
+                session_id=None  # Will be added from frontend
+            )
+            
             return SearchResponse(
                 query=original_query,
                 processed_query=processed_query if was_corrected else None,
                 total_results=response['hits']['total']['value'],
-                results=results
+                results=results,
+                search_log_id=search_log_id
             )
             
         else:  # SearchType.RRF
@@ -550,11 +660,23 @@ async def search_articles(request: SearchRequest):
                 semantic_response['hits']['total']['value']
             )
             
+            # Log search
+            search_log_id = log_search(
+                query=original_query,
+                processed_query=processed_query if was_corrected else None,
+                search_type=request.search_type.value,
+                sort_by=request.sort_by.value,
+                total_results=total_results,
+                results_returned=len(results),
+                session_id=None  # Will be added from frontend
+            )
+            
             return SearchResponse(
                 query=original_query,
                 processed_query=processed_query if was_corrected else None,
                 total_results=total_results,
-                results=results
+                results=results,
+                search_log_id=search_log_id
             )
     
     except HTTPException:
